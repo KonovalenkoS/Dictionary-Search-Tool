@@ -6,6 +6,45 @@ from string import ascii_letters, punctuation
 import re
 from fuzzywuzzy import process
 
+# App Code
+app = Dash(__name__)
+server = app.server
+
+app.layout = html.Div(
+    [
+        dcc.Upload(
+            id='upload-data',
+            children=html.Div([
+                'Drag and Drop or ',
+                html.A('Select Files')
+            ]),
+            style={
+                'width': '100%',
+                'height': '60px',
+                'lineHeight': '60px',
+                'borderWidth': '1px',
+                'borderStyle': 'dashed',
+                'borderRadius': '5px',
+                'textAlign': 'center',
+                'margin': '10px'
+            },
+            # Allow only one file to be uploaded
+            multiple=False
+        ),
+        dcc.Store(id='intermediate-value'),
+        html.I("\Press Enter and/or Tab key in Input to cancel the delay"),
+        html.Br(),
+        dcc.Input(id="input", type="text", placeholder="", debounce=True),
+        html.Div(id='output', style={'whiteSpace': 'pre-line'})
+    ]
+)
+
+class SetEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, set):
+            return list(obj)
+        return json.JSONEncoder.default(self, obj)
+
 # Global Variable Definition
 external_stylesheets = ["https://codepen.io/chriddyp/pen/bWLwgP.css"]
 punc = re.compile("[^" + re.escape(punctuation) + "]")
@@ -313,51 +352,11 @@ def print_results(dictionary, search, nearest_matches):
     '''
     linebreak = '\n\n ---------------------------------------------------------------- \n\n'
 
-    #print('Search:', search, linebreak)
     output = 'Search: ' + search + linebreak
     for match in nearest_matches:
         output += search_dictionary(dictionary, match)
         output += linebreak
     return output
-
-# App Code
-app = Dash(__name__)
-server = app.server
-
-app.layout = html.Div(
-    [
-        dcc.Upload(
-            id='upload-data',
-            children=html.Div([
-                'Drag and Drop or ',
-                html.A('Select Files')
-            ]),
-            style={
-                'width': '100%',
-                'height': '60px',
-                'lineHeight': '60px',
-                'borderWidth': '1px',
-                'borderStyle': 'dashed',
-                'borderRadius': '5px',
-                'textAlign': 'center',
-                'margin': '10px'
-            },
-            # Allow only one file to be uploaded
-            multiple=False
-        ),
-        dcc.Store(id='intermediate-value'),
-        html.I("\Press Enter and/or Tab key in Input to cancel the delay"),
-        html.Br(),
-        dcc.Input(id="input", type="text", placeholder="", debounce=True),
-        html.Div(id='output', style={'whiteSpace': 'pre-line'})
-    ]
-)
-
-class SetEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, set):
-            return list(obj)
-        return json.JSONEncoder.default(self, obj)
 
 def parse_contents(contents, filename, date):
     content_type, content_string = contents.split(',')
