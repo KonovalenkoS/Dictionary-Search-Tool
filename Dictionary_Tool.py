@@ -386,6 +386,7 @@ def parse_contents(contents, filename, date):
                 'dictionary': test_dict, #test_dict.to_json(orient='split', date_format='iso'),
                 'mapping': test_mapping, #test_mapping.to_json(orient='split', date_format='iso'),
             }
+            print('Upload Successful')
             return html.Div([json.dumps(datasets, cls=SetEncoder)])
     except Exception as e:
         print(e)
@@ -408,6 +409,7 @@ def update_output(list_of_contents, list_of_names, list_of_dates):
     Input("intermediate-value", "data")],
 )
 def update_output(input, data):
+    print(input)
     if input:
         datasets = json.loads(data['props']['children'][0])
         test_dict = datasets['dictionary']
