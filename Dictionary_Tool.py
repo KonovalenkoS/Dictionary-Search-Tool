@@ -5,6 +5,7 @@ import docx2txt
 from string import ascii_letters, punctuation
 import re
 from fuzzywuzzy import process
+import base64, io
 
 # App Code
 app = Dash(__name__)
@@ -361,11 +362,12 @@ def print_results(dictionary, search, nearest_matches):
 def parse_contents(contents, filename, date):
     content_type, content_string = contents.split(',')
 
-    # decoded = base64.b64decode(content_string)
+    decoded = base64.b64decode(content_string)
+    file_path = io.BytesIO(decoded)
     try:
         if 'docx' in filename:
-            # Assume that the user uploaded a CSV file
-            word_file = process_word_doc(filename)
+            # Assume that the user uploaded a word file
+            word_file = process_word_doc(file_path)
             test_split_file = split_documents(word_file)
             
             test_blanks = remove_leading_spaces(test_split_file)
