@@ -1,7 +1,4 @@
-json
 dash==2.17.0
 docx2txt
-string
-re
 fuzzywuzzy
 gunicorn
