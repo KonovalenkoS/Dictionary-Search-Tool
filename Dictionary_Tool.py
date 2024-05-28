@@ -322,6 +322,7 @@ def print_results(dictionary, search, nearest_matches):
 
 # App Code
 app = Dash(__name__)
+server = app.server
 
 app.layout = html.Div(
     [
@@ -419,4 +420,4 @@ def update_output(input, data):
         return "No current search"
 
 if __name__ == "__main__":
-    app.run(debug=True, port=8080)
+    app.run_server(debug=False)
