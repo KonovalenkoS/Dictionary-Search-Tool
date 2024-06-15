@@ -4,47 +4,8 @@ from dash import Dash, dcc, html, Input, Output, State, callback
 import docx2txt
 from string import ascii_letters, punctuation
 import re
-from fuzzywuzzy import process
+from fuzzywuzzy import process, fuzz
 import base64, io
-
-# App Code
-app = Dash(__name__)
-server = app.server
-
-app.layout = html.Div(
-    [
-        dcc.Upload(
-            id='upload-data',
-            children=html.Div([
-                'Drag and Drop or ',
-                html.A('Select Files')
-            ]),
-            style={
-                'width': '100%',
-                'height': '60px',
-                'lineHeight': '60px',
-                'borderWidth': '1px',
-                'borderStyle': 'dashed',
-                'borderRadius': '5px',
-                'textAlign': 'center',
-                'margin': '10px'
-            },
-            # Allow only one file to be uploaded
-            multiple=False
-        ),
-        dcc.Store(id='intermediate-value'),
-        html.I("\Press Enter and/or Tab key in Input to cancel the delay"),
-        html.Br(),
-        dcc.Input(id="input", type="text", placeholder="", debounce=True),
-        html.Div(id='output', style={'whiteSpace': 'pre-line'})
-    ]
-)
-
-class SetEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, set):
-            return list(obj)
-        return json.JSONEncoder.default(self, obj)
 
 # Global Variable Definition
 external_stylesheets = ["https://codepen.io/chriddyp/pen/bWLwgP.css"]
@@ -62,7 +23,7 @@ def split_documents(text):
     Splits the text in places where at least 4 newline characters appear.
     @param text: string
     '''
-    return text.split('\n\n\n\n')
+    return re.split('\n\n\s*\n\n', text)
 
 def delete_blanks(text):
     '''
@@ -214,7 +175,7 @@ def get_keys(text):
             grammar_dictionary[key].append(entry)
         # Otherwise, find the first part where the phrase breaks for a number, linebreak, or english
         else:
-            key_end_index = re.search(r'[a-zA-z0-9\n\t\xa0.]', entry).start()
+            key_end_index = re.search(r'[a-zA-Z0-9\n\t\xa0.]', entry).start()
             key = clean_key(entry[:key_end_index].rstrip())
 
             # Create new entry if not exist in dictionary
@@ -301,6 +262,33 @@ def categorize_entries(entry_mapping):
 
     return entry_supersets
 
+def unstick_entries(dictionary, leading, stuck):
+    '''
+    Given the leading entry, remove the stuck entry from its contained list of definitions
+    @param dictionary: the dictionary storing the definitions and terms
+    @param leading: the entry that swallowed another by accident
+    @param stuck: the entry which we want to have separate
+    '''
+    special_char = '☞'
+    
+    for index in range(len(dictionary[leading])):
+        definition = dictionary[leading][index]
+        if stuck in definition:
+            before_stuck, after_stuck = definition.split(stuck)[0], ''.join(definition.split(stuck)[1:])
+
+            # Ignore if this is a valid pointer phrase
+            if special_char in before_stuck and len(before_stuck) >= 2 and before_stuck[-2] == special_char:
+                continue
+            
+            # Create the new entry
+            key = clean_key(stuck).rstrip()
+            dictionary[key] = [key + ' ' + after_stuck.lstrip().rstrip()]
+
+            # Update the other entry
+            dictionary[leading][index] = before_stuck.rstrip()
+            return dictionary
+    return dictionary
+
 def nearest_matches(dictionary, entry_mapping, search, list_all = False, num_listed = 5):
     '''
     Given a search by the user, output the nearest 3-4 matches based on the dictionary entries.
@@ -343,6 +331,114 @@ def nearest_matches(dictionary, entry_mapping, search, list_all = False, num_lis
         return nearest_matches
     return nearest_matches[:min(num_listed, len(nearest_matches))]
 
+def extract_definition(dictionary):
+    '''
+    Extracts the basic definition of each dictionary entry. Returns a mapping from definition to entry.
+    The update is that we will extract the definition of each subentry as well for matching.
+    @param dictionary: the literal python dictionary mapping korean entries to definitions
+    '''
+    english_to_korean = {}
+
+    for key, value in dictionary.items():
+        # Kind of primitive but I'll search the first entry and then the remaining list values for whether there's a (entry)# deal where we have
+        # multiple definitions
+        key_defs = []
+        
+        # iterate over each of the definition items
+        for definition in value:
+            no_prefix_key = key.lstrip('-').rstrip('~')
+            
+            # I just wanna check the key is in the first part of the definition, plus-minus a -/~ or trailing number
+            if len(definition) >= len(no_prefix_key) + 2 and no_prefix_key in definition[:len(no_prefix_key)+2]:
+        
+                # split by \n\n
+                definition_candidates = definition.split('\n\n')
+        
+                # I want to skip the pointer-only entries
+                if len(definition_candidates) < 2:
+                    continue
+                    
+                # Check whether there's english in the first part. If yes, save that. If no, we want the second portion.
+                index = 0
+                while index < len(definition_candidates) and not re.search('[a-zA-Z]', definition_candidates[index]):
+                    index += 1
+                if index == len(definition_candidates):
+                    index = 0
+                key_defs.append(definition_candidates[index])
+                
+        english_to_korean[key] = key_defs
+
+    return english_to_korean
+
+def english_search(key_to_english, search, num_listed = 5, list_all = False):
+    '''
+    Searches for the nearest matching output of an english term.
+    @param key_to_english: dictionary mapping Korean entries to their extracted definitions
+    @param search: the term that the user is looking up
+    @param num_listed: number of matched entries to list
+    @param list_all: boolean of whether all entries should be outputted
+    '''
+    nearest_matches = []
+    fuzzy_comparison = []
+    
+    # We compare the search term to every definition
+    for entry in key_to_english.keys():
+        # iterate over each of the definitions and either match it or do smth fuzzy
+        for definition in key_to_english[entry]:
+            clean_def = definition[len(entry):].lstrip() if (len(entry) <= len(definition) and entry in definition[len(entry):]) else definition
+            if search == clean_def:
+                nearest_matches.insert(0, entry)
+            elif search in clean_def or clean_def in search: 
+                nearest_matches.append(entry)
+            else:
+                # partial_ratio throws an error where ratio doesn't, so we use it
+                match_score = fuzz.ratio(search, clean_def)
+                fuzzy_comparison.append((entry, match_score))
+
+    # Sort the results of the fuzzy matching
+    fuzzy_comparison = sorted(fuzzy_comparison, key = lambda x: x[1], reverse = True)
+
+    # Merge results
+    index = 0
+    while len(nearest_matches) < num_listed and index < len(fuzzy_comparison):
+        nearest_matches.append(fuzzy_comparison[index][0])
+        index += 1
+
+    if list_all:
+        return nearest_matches
+    return nearest_matches[:min(num_listed, len(nearest_matches))]
+
+def multilingual_branching(search, dictionary, entry_mapping, key_to_english, list_all = False, num_listed = 5):
+    '''
+    Integrates English and Korean entry-wise searching into dictionary tool. The search term will be split into the two languages,
+    then we search the nearest terms for both. The num_listed top results will be outputted.
+    
+    @param search: the term that the user is looking up
+    @param dictionary: the literal python dictionary mapping entries to their definitions
+    @param entry_mapping: the dictionary mapping a dictionary entry to its string decomposition
+    @param list_all: boolean value. If true, output every single entry where the search is a direct subset of the entry
+    @param num_listed: if not list_all, output the number of matches desired by the user
+    '''
+    # Find where we split Korean and English at first
+    splitting_loc = re.search(r'[a-zA-Z]', search)
+    splitting_loc = splitting_loc.start() if splitting_loc else -1
+
+    # A -1 means just korean. A 0 means just english. Anything else is a mix.
+    # This is obviously a trivializating assumption since we could have english followed by korean, but we'll fix this a bit later.
+    if splitting_loc == -1:
+        return nearest_matches(dictionary, entry_mapping, search, list_all, num_listed)
+    elif splitting_loc == 0:
+        return english_search(key_to_english, search, num_listed, list_all)
+    else:
+        korean_results = nearest_matches(dictionary, entry_mapping, search[:splitting_loc].rstrip(), list_all, num_listed)
+        english_results = english_search(key_to_english, search[splitting_loc:], num_listed, list_all)
+
+        # Do a 'best' aggregate of the results
+        combination = []
+        for kor_entry, eng_entry in zip(korean_results, english_results):
+            combination += [kor_entry, eng_entry]
+        return combination[:min(num_listed, len(combination))]
+
 def print_results(dictionary, search, nearest_matches):
     '''
     For the given search term, output the dictionary definitions of the nearest matches.
@@ -359,6 +455,45 @@ def print_results(dictionary, search, nearest_matches):
         output += linebreak
     return output
 
+# App Code
+app = Dash(__name__)
+server = app.server
+
+app.layout = html.Div(
+    [
+        dcc.Upload(
+            id='upload-data',
+            children=html.Div([
+                'Drag and Drop or ',
+                html.A('Select Files')
+            ]),
+            style={
+                'width': '100%',
+                'height': '60px',
+                'lineHeight': '60px',
+                'borderWidth': '1px',
+                'borderStyle': 'dashed',
+                'borderRadius': '5px',
+                'textAlign': 'center',
+                'margin': '10px'
+            },
+            # Allow only one file to be uploaded
+            multiple=False
+        ),
+        dcc.Store(id='intermediate-value'),
+        html.I("\Press Enter and/or Tab key in Input to cancel the delay"),
+        html.Br(),
+        dcc.Input(id="input", type="text", placeholder="", debounce=True),
+        html.Div(id='output', style={'whiteSpace': 'pre-line'})
+    ]
+)
+
+class SetEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, set):
+            return list(obj)
+        return json.JSONEncoder.default(self, obj)
+
 def parse_contents(contents, filename, date):
     content_type, content_string = contents.split(',')
 
@@ -368,27 +503,36 @@ def parse_contents(contents, filename, date):
         if 'docx' in filename:
             # Assume that the user uploaded a word file
             word_file = process_word_doc(file_path)
-            test_split_file = split_documents(word_file)
+            split_file = split_documents(word_file)
             
-            test_blanks = remove_leading_spaces(test_split_file)
-            test_blanks = delete_blanks(test_blanks)
+            noblanks_file = remove_leading_spaces(split_file)
+            noblanks_file = delete_blanks(noblanks_file)
             
-            test_pointers = separate_pointers(test_blanks)
-            test_pointers = remove_leading_spaces(test_pointers)
-            test_pointers = delete_blanks(test_pointers)
+            pointers_file = separate_pointers(noblanks_file)
+            pointers_file = remove_leading_spaces(pointers_file)
+            pointers_file = delete_blanks(pointers_file)
             
-            test_merge = merge_lone_pointers(test_pointers)
-            test_merge = no_english_start(test_merge)
-            test_merge = merge_lone_examples(test_merge)
+            mergedex_file = merge_lone_pointers(pointers_file)
+            mergedex_file = no_english_start(mergedex_file)
+            mergedex_file = merge_lone_examples(mergedex_file)
 
-            test_dict = get_keys(test_merge)
-            test_mapping = make_entry_set(test_dict)
+            kor_dictionary = get_keys(mergedex_file)
+            # Key un-glomming goes here. Currently very unglamorous and manual
+            kor_dictionary = unstick_entries(kor_dictionary, '-ㄴ', '-나(요)?')
+            kor_dictionary = unstick_entries(kor_dictionary, '다음', '-다지(요)?/라지(요)?')
+            kor_dictionary = unstick_entries(kor_dictionary, '다음', '-(으)ㄴ 다음에')
+            kor_dictionary = unstick_entries(kor_dictionary, '때', '(으)ㄹ 때')
+            kor_dictionary = unstick_entries(kor_dictionary, '아니', '아니에요?')
+            kor_dictionary = unstick_entries(kor_dictionary, '아니', '아니겠어요?')
+
+            entry_sets = make_entry_set(kor_dictionary)
+            english_defs = extract_definition(kor_dictionary)
 
             datasets = {
-                'dictionary': test_dict, #test_dict.to_json(orient='split', date_format='iso'),
-                'mapping': test_mapping, #test_mapping.to_json(orient='split', date_format='iso'),
+                'dictionary': kor_dictionary, 
+                'mapping': entry_sets,
+                'definitions': english_defs,
             }
-            print('Upload Successful')
             return html.Div([json.dumps(datasets, cls=SetEncoder)])
     except Exception as e:
         print(e)
@@ -411,16 +555,17 @@ def update_output(list_of_contents, list_of_names, list_of_dates):
     Input("intermediate-value", "data")],
 )
 def update_output(input, data):
-    print(input)
     if input:
         datasets = json.loads(data['props']['children'][0])
-        test_dict = datasets['dictionary']
-        test_mapping = datasets['mapping'] 
-        matching_outputs = nearest_matches(test_dict, test_mapping, input)
-        results = print_results(test_dict, input, matching_outputs)
+        dictionary = datasets['dictionary']
+        mapping = datasets['mapping'] 
+        definitions = datasets['definitions']
+        matching_outputs = multilingual_branching(input, dictionary, mapping, definitions)
+        results = print_results(dictionary, input, matching_outputs)
         return '{}'.format(results)
     else:
         return "No current search"
 
 if __name__ == "__main__":
+    # app.run_server(debug=True, port=8080)
     app.run_server(debug=False)
